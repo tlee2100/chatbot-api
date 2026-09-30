@@ -14,7 +14,7 @@ import { SiteModule } from './site/site.module';
 import { AuthModule } from './auth/auth.module';
 import { ChatModule } from './chat/chat.module';
 import { DocumentModule } from './document/document.module';
-import { NotificationsModule } from './auth/notifications/notifications.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { OrganizationModule } from './organization/organization.module';
 import { McpModule } from './mcp/mcp.module';
 

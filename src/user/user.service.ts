@@ -1,4 +1,4 @@
-import { Injectable, ConflictException } from '@nestjs/common';
+import { Injectable, ConflictException, BadRequestException } from '@nestjs/common';
 import { Repository, FindOptionsWhere } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 
@@ -12,7 +12,7 @@ import { Role } from './enums/role.enum';
 import { UserDto } from './dto/user.dto';
 import { QueryUserDto } from './dto/query-user.dto';
 import { PaginatedUserDto } from './dto/paginated-user.dto';
-import { NotificationsGateway } from '../auth/notifications/notifications.gateway';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
 
 @Injectable()
 export class UserService {
@@ -86,7 +86,10 @@ export class UserService {
     return this.findOne({ id: Number(id) });
   }
 
-  async deleteUser(id: number): Promise<void> {
+  async deleteUser(id: number, currentUserId?: number): Promise<void> {
+    if (currentUserId && Number(id) === Number(currentUserId)) {
+      throw new BadRequestException('You cannot delete yourself');
+    }
     await this.usersRepository.delete({ id: Number(id) });
   }
 

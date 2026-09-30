@@ -101,10 +101,7 @@ export class UserController {
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Delete(':id')
   async delete(@Param('id') id: number, @Request() req: AuthenticatedRequest) {
-    if (Number(id) === req.user.id) {
-      throw new BadRequestException('You cannot delete yourself');
-    }
-    return this.userService.deleteUser(id);
+    return this.userService.deleteUser(id, req.user.id);
   }
 
   @ApiOperation({ summary: 'Get paginated list of users with filter and sort' })

@@ -6,7 +6,7 @@ import { UserController } from './user.controller';
 import { Users } from './entities/user.entity';
 import { UserService } from './user.service';
 import { UserMappingProfile } from './user.mapping-profile';
-import { NotificationsModule } from '../auth/notifications/notifications.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [

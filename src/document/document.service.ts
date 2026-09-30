@@ -1,26 +1,19 @@
-import {
-  Injectable,
-  NotFoundException,
-  ForbiddenException,
-  OnApplicationBootstrap,
-  Logger,
-} from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { InjectQueue } from '@nestjs/bull';
 import { Repository } from 'typeorm';
 import type { Queue } from 'bull';
 import { paginate, PaginateQuery, Paginated } from 'nestjs-paginate';
 import { unlink } from 'fs/promises';
-import * as fs from 'fs/promises';
 import { Role } from 'src/user/enums/role.enum';
 import { SiteService } from '../site/site.service';
-import { NotificationsGateway } from '../auth/notifications/notifications.gateway';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { Document } from './entities/document.entity';
 import { DocumentStatus } from './enums/document-status.enum';
 import { VectorStoreService } from '../vector-store/vector-store.service';
 
 @Injectable()
-export class DocumentService implements OnApplicationBootstrap {
+export class DocumentService {
   private readonly logger = new Logger(DocumentService.name);
 
   constructor(
@@ -32,25 +25,6 @@ export class DocumentService implements OnApplicationBootstrap {
     private readonly notificationsGateway: NotificationsGateway,
     private readonly vectorStoreService: VectorStoreService,
   ) {}
-
-  async onApplicationBootstrap() {
-    this.logger.log('Loading ready documents into vector store on startup...');
-    const readyDocs = await this.documentRepository.find({
-      where: { status: DocumentStatus.READY },
-    });
-
-    for (const doc of readyDocs) {
-      if (doc.filePath.endsWith('.txt')) {
-        try {
-          const text = await fs.readFile(doc.filePath, 'utf-8');
-          await this.vectorStoreService.addDocuments(text, doc.siteId, doc.id, doc.filename);
-          this.logger.log(`Loaded document #${doc.id} for site ${doc.siteId}`);
-        } catch (error) {
-          this.logger.error(`Failed to load document #${doc.id}:`, error);
-        }
-      }
-    }
-  }
 
   async uploadAndQueue(
     file: Express.Multer.File,

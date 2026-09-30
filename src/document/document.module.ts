@@ -7,7 +7,7 @@ import { DocumentController } from './document.controller';
 import { DocumentProcessingWorker } from './document-processing.worker';
 import { ChatModule } from '../chat/chat.module';
 import { SiteModule } from '../site/site.module';
-import { NotificationsModule } from '../auth/notifications/notifications.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { VectorStoreModule } from '../vector-store/vector-store.module';
 
 @Module({

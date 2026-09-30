@@ -6,8 +6,8 @@ import {
 } from '@nestjs/websockets';
 import { Server } from 'socket.io';
 import { Injectable, Logger } from '@nestjs/common';
-import { WsJwtGuard } from '../guards/ws-jwt.guard';
-import type { AuthenticatedSocket } from '../interfaces/authenticated-socket.interface';
+import { WsJwtGuard } from '../auth/guards/ws-jwt.guard';
+import type { AuthenticatedSocket } from '../auth/interfaces/authenticated-socket.interface';
 import type { NotificationPayload } from './interfaces/notification-payload.interface';
 
 const NOTIFICATIONS_ROOM = 'notifications';
@@ -42,8 +42,6 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
     this.logger.log(`Client ${client.id} disconnected from /notifications`);
   }
 
-  // Gọi từ bất kỳ service nào (UserService khi tạo user mới, Bull processor
-  // khi job xong...) để bắn notification tới mọi admin đang mở dashboard
   notify(payload: Omit<NotificationPayload, 'id' | 'createdAt'>): void {
     const fullPayload: NotificationPayload = {
       ...payload,
@@ -53,7 +51,6 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
     this.server.to(NOTIFICATIONS_ROOM).emit('notification', fullPayload);
   }
 
-  // Gửi thông báo đến danh sách người dùng cụ thể
   notifyUsers(userIds: number[], payload: Omit<NotificationPayload, 'id' | 'createdAt'>): void {
     if (!userIds || userIds.length === 0) return;
 
@@ -63,7 +60,6 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
       createdAt: new Date().toISOString(),
     };
 
-    // Gửi đến room của từng user
     userIds.forEach((userId) => {
       this.server.to(`user_${userId}`).emit('notification', fullPayload);
     });

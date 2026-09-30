@@ -5,7 +5,7 @@ import { InternalApiKeyGuard } from './guards/internal-api-key.guard';
 @UseGuards(InternalApiKeyGuard)
 @Controller('api/internal/mcp')
 export class McpController {
-  constructor(private readonly mcpService: McpService) { }
+  constructor(private readonly mcpService: McpService) {}
 
   @Get('conversations/:id/context')
   getConversationContext(@Param('id') id: string) {
@@ -26,5 +26,4 @@ export class McpController {
   searchKnowledge(@Body('siteId', ParseIntPipe) siteId: number, @Body('query') query: string) {
     return this.mcpService.searchKnowledge(siteId, query);
   }
-
 }

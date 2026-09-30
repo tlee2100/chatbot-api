@@ -13,6 +13,8 @@ import {
   UploadedFile,
   UseInterceptors,
   BadRequestException,
+  UsePipes,
+  ValidationPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
@@ -21,24 +23,17 @@ import type { Request, Response } from 'express';
 import { AuthGuard } from '@nestjs/passport';
 import { Paginate, ApiPaginationQuery } from 'nestjs-paginate';
 import type { PaginateQuery } from 'nestjs-paginate';
-import type { ModelMessage } from 'ai';
 import { ChatService } from './chat.service';
 import { ChatGateway } from './chat.gateway';
-import { AiService } from './ai.service';
-import { GraphService } from './graph.service';
-import { NotificationsGateway } from '../auth/notifications/notifications.gateway';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { CreateConversationDto } from './dto/create-conversation.dto';
-import { SenderType } from './entities/chat-message.entity';
+import { StreamChatDto } from './dto/stream-chat.dto';
 
 @Controller('chat')
 export class ChatController {
   constructor(
     private readonly chatService: ChatService,
     private readonly chatGateway: ChatGateway,
-    private readonly aiService: AiService,
-    private readonly graphService: GraphService,
-    private readonly notificationsGateway: NotificationsGateway,
   ) {}
 
   /**
@@ -71,120 +66,18 @@ export class ChatController {
   }
 
   @Post('stream')
-  async streamChat(@Body() body: any, @Res() res: Response) {
-    const { messages, conversationId } = body;
-
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false, transform: true }))
+  async streamChat(@Body() dto: StreamChatDto, @Res() res: Response) {
     // Set headers for plain text streaming (used by TextStreamChatTransport)
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('X-Content-Type-Options', 'nosniff');
 
-    const conversation = await this.chatService.getConversationById(conversationId);
-    
-    // Process the latest message from the frontend payload
-    const newUserMessagePayload = messages[messages.length - 1];
-    const newUserMessage: ModelMessage = {
-      role: 'user',
-      content: newUserMessagePayload.parts
-        ? newUserMessagePayload.parts
-            .filter((p: any) => p.type === 'text')
-            .map((p: any) => p.text)
-            .join('')
-        : newUserMessagePayload.content || '',
-    };
-
-    // Load unsummarized DB history
-    const allDbMessages = await this.chatService.getMessagesForConversation(conversationId, undefined, 1000);
-    const dbMessages: ModelMessage[] = allDbMessages
-      .slice(conversation.summarizedMessageCount)
-      .map((msg) => ({
-        role: msg.senderType === SenderType.AI ? 'assistant' : 'user',
-        content: msg.fileUrl
-          ? `[Attached file: ${msg.fileName}] ` + (msg.content || '')
-          : msg.content || '',
-      }));
-
-    // Avoid duplication if the new user message was already saved to DB via WebSocket
-    if (dbMessages.length > 0) {
-      const lastDbMsg = dbMessages[dbMessages.length - 1];
-      if (lastDbMsg.role === 'user' && lastDbMsg.content === newUserMessage.content) {
-        dbMessages.pop();
-      }
-    }
-
-    const messagesToProcess = [...dbMessages, newUserMessage];
-
-    const { newSummary, newSummarizedMessageCount } = await this.graphService.streamChatResponse(
-      messagesToProcess,
-      res,
-      async (text, knowledgeSources) => {
-        if (!text.trim()) return;
-        try {
-          const aiSavedMessage = await this.chatService.saveMessage(
-            conversationId,
-            text,
-            SenderType.AI,
-            undefined,
-            undefined,
-            undefined,
-            knowledgeSources,
-          );
-
-          const messagePayload = {
-            id: aiSavedMessage.id,
-            conversationId,
-            message: aiSavedMessage.content,
-            senderType: aiSavedMessage.senderType,
-            createdAt: aiSavedMessage.createdAt,
-            fileName: aiSavedMessage.fileName,
-            fileType: aiSavedMessage.fileType,
-            fileUrl: aiSavedMessage.fileUrl,
-            reactions: aiSavedMessage.reactions,
-            knowledgeSources: aiSavedMessage.knowledgeSources,
-          };
-
-          const { knowledgeSources: _ignoredSources, ...publicMessagePayload } = messagePayload;
-
-          this.chatGateway.server
-            .to(`conversation-${conversationId}`)
-            .except(`agent-conversation-${conversationId}`)
-            .emit('newMessage', publicMessagePayload);
-
-          this.chatGateway.server
-            .to(`agent-conversation-${conversationId}`)
-            .emit('newMessage', messagePayload);
-
-          const conversation = await this.chatService.getConversationById(conversationId);
-          if (conversation) {
-            this.chatGateway.server
-              .to(`site-${conversation.siteId}`)
-              .emit('conversationActivity', { id: conversationId });
-          }
-        } catch (err) {
-          console.error('Failed to save AI message:', err);
-        }
-      },
-      async () => {
-        // Handle the handoff request: Notify admin and update status
-        await this.chatService.requestHandoff(conversationId);
-        this.chatGateway.server.to(`conversation-${conversationId}`).emit('handlingStatusUpdated', {
-          conversationId,
-          handlingStatus: 'WAITING_FOR_AGENT',
-        });
-      },
-      conversation?.siteId,
-      conversation.summary,
-      conversation.summarizedMessageCount,
-      conversationId
-    );
-
-    if (newSummary !== undefined && newSummarizedMessageCount !== undefined) {
-      await this.chatService.updateConversationSummary(
-        conversationId,
-        newSummary,
-        newSummarizedMessageCount,
-      );
+    try {
+      await this.chatService.streamChatConversation(dto, (chunk) => res.write(chunk));
+    } finally {
+      res.end();
     }
   }
 

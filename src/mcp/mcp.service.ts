@@ -1,49 +1,25 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Conversation } from '../chat/entities/conversation.entity';
-import { Users } from '../user/entities/user.entity';
-import { Site } from '../site/entities/site.entity';
-import { VectorStoreService } from '../vector-store/vector-store.service';
-import { ChatMessage } from '../chat/entities/chat-message.entity';
 import { ChatService } from '../chat/chat.service';
-import { ChatGateway } from '../chat/chat.gateway';
+import { UserService } from '../user/user.service';
+import { SiteService } from '../site/site.service';
+import { VectorStoreService } from '../vector-store/vector-store.service';
 
 @Injectable()
 export class McpService {
   constructor(
-    @InjectRepository(Conversation)
-    private readonly conversationRepo: Repository<Conversation>,
-    @InjectRepository(ChatMessage)
-    private readonly chatMessageRepo: Repository<ChatMessage>,
-    @InjectRepository(Users)
-    private readonly usersRepo: Repository<Users>,
-    @InjectRepository(Site)
-    private readonly siteRepo: Repository<Site>,
-    private readonly vectorStoreService: VectorStoreService,
     private readonly chatService: ChatService,
-    private readonly chatGateway: ChatGateway,
-  ) { }
+    private readonly userService: UserService,
+    private readonly siteService: SiteService,
+    private readonly vectorStoreService: VectorStoreService,
+  ) {}
 
   async getConversationContext(id: string) {
-    const conversation = await this.conversationRepo.findOne({
-      where: { id },
-    });
-
+    const conversation = await this.chatService.getConversationById(id);
     if (!conversation) {
       throw new NotFoundException(`Conversation ${id} not found`);
     }
 
-    const messages = await this.chatMessageRepo.find({
-      where: { conversation: { id } },
-      order: { createdAt: 'DESC' },
-      take: 10,
-    });
-
-    // Sort ascending for chronological order
-    const chronologicalMessages = messages.sort(
-      (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
-    );
+    const messages = await this.chatService.getMessagesForConversation(id, undefined, 10);
 
     let summary = conversation.summary || '';
     if (summary.length > 1500) {
@@ -56,7 +32,7 @@ export class McpService {
       status: conversation.status,
       handlingStatus: conversation.handlingStatus,
       summary,
-      messages: chronologicalMessages.map((m) => ({
+      messages: messages.map((m) => ({
         role: m.senderType,
         timestamp: m.createdAt,
         content:
@@ -66,15 +42,12 @@ export class McpService {
   }
 
   async getUserDetailsByEmail(email: string) {
-    const user = await this.usersRepo.findOne({
-      where: { email },
-    });
+    const user = await this.userService.findOne({ email });
 
     if (!user) {
       throw new NotFoundException(`User with email ${email} not found`);
     }
 
-    // Explicitly omit sensitive fields
     return {
       id: user.id,
       name: user.name,
@@ -87,9 +60,7 @@ export class McpService {
   }
 
   async getSiteConfig(siteId: number) {
-    const site = await this.siteRepo.findOne({
-      where: { id: siteId },
-    });
+    const site = await this.siteService.findOne(siteId);
 
     if (!site) {
       throw new NotFoundException(`Site ${siteId} not found`);
@@ -108,7 +79,6 @@ export class McpService {
   async searchKnowledge(siteId: number, query: string) {
     const results = await this.vectorStoreService.similaritySearch(query, siteId, 5);
 
-    // Deduplicate by documentId to retain memory-first/pgvector-fallback behavior logic
     const uniqueResults: typeof results = [];
     const seenDocs = new Set<number>();
 
@@ -121,5 +91,4 @@ export class McpService {
 
     return uniqueResults;
   }
-
 }

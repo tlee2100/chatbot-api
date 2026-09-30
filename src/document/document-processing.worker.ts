@@ -4,7 +4,7 @@ import type { Job } from 'bull';
 import * as fs from 'fs/promises';
 import { DocumentService } from './document.service';
 import { DocumentStatus } from './enums/document-status.enum';
-import { NotificationsGateway } from '../auth/notifications/notifications.gateway';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { VectorStoreService } from '../vector-store/vector-store.service';
 
 interface DocumentProcessingJobData {

@@ -1,15 +1,24 @@
-import { Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  UnauthorizedException,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { paginate, Paginated } from 'nestjs-paginate';
 import type { PaginateQuery } from 'nestjs-paginate';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, LessThan, Brackets } from 'typeorm';
-import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
-import { AuthenticatedSocket } from '../auth/interfaces/authenticated-socket.interface';
+import type { ModelMessage } from 'ai';
 import { Site } from '../site/entities/site.entity';
 import { Conversation, ConversationStatus, HandlingStatus } from './entities/conversation.entity';
 import { ChatMessage, SenderType, MessageStatus } from './entities/chat-message.entity';
 import { CreateConversationDto } from './dto/create-conversation.dto';
-import { NotificationsGateway } from '../auth/notifications/notifications.gateway';
+import { StreamChatDto } from './dto/stream-chat.dto';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
+import { GraphService } from './graph.service';
+import { ChatGateway } from './chat.gateway';
 
 @Injectable()
 export class ChatService {
@@ -23,18 +32,23 @@ export class ChatService {
     @InjectRepository(ChatMessage)
     private readonly chatMessageRepository: Repository<ChatMessage>,
     private readonly notificationsGateway: NotificationsGateway,
+    private readonly graphService: GraphService,
+    @Inject(forwardRef(() => ChatGateway))
+    private readonly chatGateway: ChatGateway,
   ) {}
 
   /**
-   * Called when an authenticated agent WebSocket client connects.
-   * Joins the agent into notification rooms for every site they own or are assigned to.
+   * Returns all site IDs the agent has access to (owned + assigned).
    */
-  async handleClientConnected(client: AuthenticatedSocket, user: AuthenticatedUser): Promise<void> {
-    // Find all sites the agent has access to (owned + assigned via site_agents table)
-    const ownedSites = await this.siteRepository.find({ where: { ownerId: user.id } });
+  async getAgentSiteIds(agentId: number): Promise<number[]> {
+    const ownedSites = await this.siteRepository.find({
+      where: { ownerId: agentId },
+      select: ['id'],
+    });
     const assignedSitesResult = await this.siteRepository
       .createQueryBuilder('site')
-      .innerJoin('site.agents', 'agent', 'agent.id = :userId', { userId: user.id })
+      .innerJoin('site.agents', 'agent', 'agent.id = :userId', { userId: agentId })
+      .select(['site.id'])
       .getMany();
 
     const allSiteIds = new Set([
@@ -42,14 +56,7 @@ export class ChatService {
       ...assignedSitesResult.map((s) => s.id),
     ]);
 
-    // Join a room for each site: agents in "site-1" room get notified when a visitor starts a chat on site 1
-    for (const siteId of allSiteIds) {
-      await client.join(`site-${siteId}`);
-    }
-
-    this.logger.log(
-      `Agent ${user.email} connected. Joined site rooms: [${[...allSiteIds].join(', ')}]`,
-    );
+    return Array.from(allSiteIds);
   }
 
   /**
@@ -401,6 +408,101 @@ export class ChatService {
         },
       });
       this.logger.log(`Handoff requested for conversation ${conversationId} via button`);
+    }
+  }
+
+  /**
+   * Orchestrates chat streaming, history preprocessing, message persistence, and WebSocket broadcasting.
+   */
+  async streamChatConversation(
+    dto: StreamChatDto,
+    onToken: (chunk: string) => void,
+  ): Promise<void> {
+    const { conversationId, messages } = dto;
+    const conversation = await this.getConversationById(conversationId);
+    if (!conversation) {
+      throw new NotFoundException(`Conversation ${conversationId} not found`);
+    }
+
+    // Process the latest message from the frontend payload
+    const newUserMessagePayload = messages[messages.length - 1];
+    const newUserMessage: ModelMessage = {
+      role: 'user',
+      content: newUserMessagePayload.parts
+        ? newUserMessagePayload.parts
+            .filter((p: any) => p.type === 'text')
+            .map((p: any) => p.text)
+            .join('')
+        : newUserMessagePayload.content || '',
+    };
+
+    // Load unsummarized DB history
+    const allDbMessages = await this.getMessagesForConversation(conversationId, undefined, 1000);
+    const dbMessages: ModelMessage[] = allDbMessages
+      .slice(conversation.summarizedMessageCount)
+      .map((msg) => ({
+        role: msg.senderType === SenderType.AI ? 'assistant' : 'user',
+        content: msg.fileUrl
+          ? `[Attached file: ${msg.fileName}] ${msg.content || ''}`
+          : msg.content || '',
+      }));
+
+    // Avoid duplication if the new user message was already saved to DB via WebSocket
+    if (dbMessages.length > 0) {
+      const lastDbMsg = dbMessages[dbMessages.length - 1];
+      if (lastDbMsg.role === 'user' && lastDbMsg.content === newUserMessage.content) {
+        dbMessages.pop();
+      }
+    }
+
+    const messagesToProcess = [...dbMessages, newUserMessage];
+
+    const { newSummary, newSummarizedMessageCount } = await this.graphService.streamChatResponse(
+      messagesToProcess,
+      onToken,
+      async (text, knowledgeSources) => {
+        if (!text.trim()) return;
+        try {
+          const aiSavedMessage = await this.saveMessage(
+            conversationId,
+            text,
+            SenderType.AI,
+            undefined,
+            undefined,
+            undefined,
+            knowledgeSources,
+          );
+
+          const messagePayload = {
+            id: aiSavedMessage.id,
+            conversationId,
+            message: aiSavedMessage.content,
+            senderType: aiSavedMessage.senderType,
+            createdAt: aiSavedMessage.createdAt,
+            fileName: aiSavedMessage.fileName,
+            fileType: aiSavedMessage.fileType,
+            fileUrl: aiSavedMessage.fileUrl,
+            reactions: aiSavedMessage.reactions,
+            knowledgeSources: aiSavedMessage.knowledgeSources,
+          };
+
+          this.chatGateway.notifyAiMessage(conversationId, messagePayload, conversation.siteId);
+        } catch (err) {
+          this.logger.error('Failed to save AI message:', err);
+        }
+      },
+      async () => {
+        await this.requestHandoff(conversationId);
+        this.chatGateway.notifyHandlingStatusUpdated(conversationId, 'WAITING_FOR_AGENT');
+      },
+      conversation.siteId,
+      conversation.summary,
+      conversation.summarizedMessageCount,
+      conversationId,
+    );
+
+    if (newSummary !== undefined && newSummarizedMessageCount !== undefined) {
+      await this.updateConversationSummary(conversationId, newSummary, newSummarizedMessageCount);
     }
   }
 }

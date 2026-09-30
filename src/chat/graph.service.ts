@@ -1,26 +1,33 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Response as ExpressResponse } from 'express';
 import { StateGraph, START, END, Annotation } from '@langchain/langgraph';
-import { BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
+import {
+  BaseMessage,
+  HumanMessage,
+  AIMessage,
+  SystemMessage,
+  ToolMessage,
+} from '@langchain/core/messages';
 import { ChatOpenAI } from '@langchain/openai';
 import { ToolNode, toolsCondition } from '@langchain/langgraph/prebuilt';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { loadMcpTools } from '@langchain/mcp-adapters';
-import * as fs from 'fs';
-import * as path from 'path';
 
 @Injectable()
 export class GraphService {
   private readonly logger = new Logger(GraphService.name);
+
   private systemPrompt: string;
+
   private apiKey: string;
+
   private baseURL: string;
 
   constructor(private readonly configService: ConfigService) {
     this.apiKey = this.configService.get<string>('DEEPSEEK_API_KEY') || '';
-    this.baseURL = this.configService.get<string>('DEEPSEEK_BASE_URL') || 'https://api.ai-box.vn/v1';
+    this.baseURL =
+      this.configService.get<string>('DEEPSEEK_BASE_URL') || 'https://api.ai-box.vn/v1';
     this.systemPrompt =
       this.configService.get<string>('SYSTEM_PROMPT') ||
       'You are a helpful customer support chatbot. Please assist the visitor with their inquiries.';
@@ -28,7 +35,7 @@ export class GraphService {
 
   async streamChatResponse(
     messages: any[],
-    res: ExpressResponse,
+    onToken: (chunk: string) => void,
     onFinish: (
       text: string,
       knowledgeSources?: { documentId: number; filename: string }[],
@@ -50,7 +57,8 @@ export class GraphService {
         return new HumanMessage(m.content);
       });
 
-      const mcpServerUrl = this.configService.get<string>('MCP_SERVER_URL') || 'http://localhost:3001/mcp/sse';
+      const mcpServerUrl =
+        this.configService.get<string>('MCP_SERVER_URL') || 'http://localhost:3001/mcp/sse';
       const internalApiKey = this.configService.get<string>('INTERNAL_API_KEY') || '';
 
       const urlWithParams = new URL(mcpServerUrl);
@@ -60,14 +68,17 @@ export class GraphService {
       mcpTransport = new SSEClientTransport(urlWithParams, {
         requestInit: {
           headers: { 'x-internal-api-key': internalApiKey },
-        }
+        },
       });
-      mcpClient = new Client({ name: 'chatbot-api-client', version: '1.0.0' }, { capabilities: {} });
+      mcpClient = new Client(
+        { name: 'chatbot-api-client', version: '1.0.0' },
+        { capabilities: {} },
+      );
       await mcpClient.connect(mcpTransport);
 
       const mcpTools = await loadMcpTools('chatbot-mcp-server', mcpClient);
-      const requestHumanTool = mcpTools.find(t => t.name.includes('requestHumanAgent'));
-      const aiTools = mcpTools.filter(t => !t.name.includes('requestHumanAgent'));
+      const requestHumanTool = mcpTools.find((t) => t.name.includes('requestHumanAgent'));
+      const aiTools = mcpTools.filter((t) => !t.name.includes('requestHumanAgent'));
 
       const toolNode = new ToolNode(mcpTools);
 
@@ -144,7 +155,7 @@ Message: "${lastMessage.content}"`;
           await onRequestHandoff();
         }
         const handoffMsg = 'An agent has been notified and will be with you shortly.';
-        res.write(handoffMsg);
+        onToken(handoffMsg);
         return { messages: [new AIMessage(handoffMsg)] };
       };
 
@@ -163,7 +174,7 @@ Message: "${lastMessage.content}"`;
             {
               handleLLMNewToken(token: string) {
                 if (token) {
-                  res.write(token);
+                  onToken(token);
                 }
               },
             },
@@ -175,7 +186,11 @@ Message: "${lastMessage.content}"`;
 
       const parse_tools = async (state: typeof GraphState.State) => {
         const lastMessage = state.messages[state.messages.length - 1];
-        if (lastMessage instanceof ToolMessage && lastMessage.name && lastMessage.name.includes('searchKnowledge')) {
+        if (
+          lastMessage instanceof ToolMessage &&
+          lastMessage.name &&
+          lastMessage.name.includes('searchKnowledge')
+        ) {
           try {
             const results = JSON.parse(lastMessage.content as string);
             const sourcesMap = new Map<number, string>();
@@ -184,10 +199,12 @@ Message: "${lastMessage.content}"`;
                 sourcesMap.set(c.documentId, c.filename);
               }
             });
-            const knowledgeSources = Array.from(sourcesMap.entries()).map(([documentId, filename]) => ({
-              documentId,
-              filename,
-            }));
+            const knowledgeSources = Array.from(sourcesMap.entries()).map(
+              ([documentId, filename]) => ({
+                documentId,
+                filename,
+              }),
+            );
             return { knowledgeSources };
           } catch (e) {
             this.logger.error('Failed to parse searchKnowledge output', e);
@@ -240,7 +257,7 @@ Message: "${lastMessage.content}"`;
 
       workflow.addConditionalEdges('model_node', toolsCondition, {
         tools: 'tools',
-        __end__: 'summarize_memory'
+        __end__: 'summarize_memory',
       });
 
       workflow.addEdge('tools', 'parse_tools');
@@ -265,7 +282,7 @@ Message: "${lastMessage.content}"`;
         .reverse()
         .find((m: any) => {
           if (!m.constructor?.name?.includes('AIMessage')) return false;
-          const content = m.content;
+          const { content } = m;
           if (!content) return false;
           // Skip messages that only have tool_calls (their content is empty string)
           if (typeof content === 'string' && content.trim().length === 0) return false;
@@ -275,18 +292,25 @@ Message: "${lastMessage.content}"`;
         });
 
       const diagLog = (msg: string) => {
-        this.logger.log(msg);
-        try { fs.appendFileSync(path.join(process.cwd(), 'save-diag.log'), `${new Date().toISOString()} ${msg}\n`); } catch { }
+        this.logger.debug(msg);
       };
 
       diagLog(`[Save] finalState.messages count: ${finalState.messages.length}`);
-      diagLog(`[Save] lastAiMessage found: ${!!lastAiMessage}, content type: ${typeof lastAiMessage?.content}`);
+      diagLog(
+        `[Save] lastAiMessage found: ${!!lastAiMessage}, content type: ${typeof lastAiMessage?.content}`,
+      );
 
       if (lastAiMessage && lastAiMessage.content) {
-        const textContent = typeof lastAiMessage.content === 'string'
-          ? lastAiMessage.content
-          : (lastAiMessage.content as any[]).filter((c: any) => c.type === 'text').map((c: any) => c.text).join('');
-        diagLog(`[Save] textContent length: ${textContent.length}, preview: ${textContent.substring(0, 80)}`);
+        const textContent =
+          typeof lastAiMessage.content === 'string'
+            ? lastAiMessage.content
+            : (lastAiMessage.content as any[])
+                .filter((c: any) => c.type === 'text')
+                .map((c: any) => c.text)
+                .join('');
+        diagLog(
+          `[Save] textContent length: ${textContent.length}, preview: ${textContent.substring(0, 80)}`,
+        );
         if (textContent.trim()) {
           try {
             await onFinish(textContent, finalState.knowledgeSources);
@@ -300,23 +324,25 @@ Message: "${lastMessage.content}"`;
       } else {
         diagLog('[Save] No valid lastAiMessage found');
         finalState.messages.forEach((m: any, i: number) => {
-          diagLog(`[Save] msg[${i}] type=${m.constructor?.name}, contentType=${typeof m.content}, contentPreview=${JSON.stringify(m.content)?.substring(0, 60)}`);
+          diagLog(
+            `[Save] msg[${i}] type=${m.constructor?.name}, contentType=${typeof m.content}, contentPreview=${JSON.stringify(m.content)?.substring(0, 60)}`,
+          );
         });
       }
 
-      res.end();
-
       return {
         newSummary: finalState.summary !== existingSummary ? finalState.summary : undefined,
-        newSummarizedMessageCount: finalState.summarizedMessageCount !== existingSummarizedMessageCount ? finalState.summarizedMessageCount : undefined,
+        newSummarizedMessageCount:
+          finalState.summarizedMessageCount !== existingSummarizedMessageCount
+            ? finalState.summarizedMessageCount
+            : undefined,
       };
-
     } catch (error) {
       this.logger.error('Error in LangGraph workflow', error);
-      const fallbackMsg = "I'm currently unable to access my tools, but I'll do my best to help you.";
-      res.write(fallbackMsg);
+      const fallbackMsg =
+        "I'm currently unable to access my tools, but I'll do my best to help you.";
+      onToken(fallbackMsg);
       await onFinish(fallbackMsg);
-      res.end();
       return {};
     } finally {
       if (mcpTransport) {

@@ -85,9 +85,6 @@ export class SiteController {
     @Body() dto: UpdateSiteDto,
     @Request() req: AuthenticatedRequest,
   ) {
-    if (req.user.role !== Role.SUPER_ADMIN && 'organizationId' in dto) {
-      delete dto.organizationId;
-    }
     return this.siteService.update(id, dto, req.user.id, req.user.role);
   }
 

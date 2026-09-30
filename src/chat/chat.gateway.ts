@@ -1,3 +1,4 @@
+import { Inject, forwardRef } from '@nestjs/common';
 import {
   ConnectedSocket,
   MessageBody,
@@ -12,7 +13,6 @@ import { WsJwtGuard } from '../auth/guards/ws-jwt.guard';
 import { ChatService } from './chat.service';
 import { Conversation, HandlingStatus } from './entities/conversation.entity';
 import { ChatMessage, SenderType, MessageStatus } from './entities/chat-message.entity';
-import { AiService } from './ai.service';
 
 @WebSocketGateway({
   cors: { origin: '*' },
@@ -23,8 +23,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   constructor(
     private readonly wsJwtGuard: WsJwtGuard,
+    @Inject(forwardRef(() => ChatService))
     private readonly chatService: ChatService,
-    private readonly aiService: AiService,
   ) {}
 
   async handleConnection(client: Socket): Promise<void> {
@@ -41,7 +41,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // 1. Try to authenticate as an Agent (throws if no valid JWT)
       const user = this.wsJwtGuard.authenticate(client as any);
       // Agent authenticated — join them into their assigned site rooms
-      await this.chatService.handleClientConnected(client as any, user);
+      const siteIds = await this.chatService.getAgentSiteIds(user.id);
+      for (const siteId of siteIds) {
+        await client.join(`site-${siteId}`);
+      }
+      console.log(`Agent ${user.email} connected. Joined site rooms: [${siteIds.join(', ')}]`);
     } catch (e) {
       // 2. Not an agent — check if it's a Visitor with a conversationId
       const conversationId = client.handshake.query.conversationId as string;
@@ -92,6 +96,28 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server
       .to(`conversation-${conversationId}`)
       .emit('conversationClosed', { id: conversationId });
+  }
+
+  notifyAiMessage(conversationId: string, messagePayload: any, siteId?: number): void {
+    const { knowledgeSources: _ignoredSources, ...publicMessagePayload } = messagePayload;
+
+    this.server
+      .to(`conversation-${conversationId}`)
+      .except(`agent-conversation-${conversationId}`)
+      .emit('newMessage', publicMessagePayload);
+
+    this.server.to(`agent-conversation-${conversationId}`).emit('newMessage', messagePayload);
+
+    if (siteId) {
+      this.server.to(`site-${siteId}`).emit('conversationActivity', { id: conversationId });
+    }
+  }
+
+  notifyHandlingStatusUpdated(conversationId: string, handlingStatus: string): void {
+    this.server.to(`conversation-${conversationId}`).emit('handlingStatusUpdated', {
+      conversationId,
+      handlingStatus,
+    });
   }
 
   /**

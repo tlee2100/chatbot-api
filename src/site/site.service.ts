@@ -120,7 +120,12 @@ export class SiteService {
       throw new ForbiddenException('You do not have permission to update this site');
     }
 
-    await this.siteRepository.update(id, dto);
+    const updateData = { ...dto };
+    if (currentUserRole !== Role.SUPER_ADMIN && 'organizationId' in updateData) {
+      delete updateData.organizationId;
+    }
+
+    await this.siteRepository.update(id, updateData);
     return this.findOne(id);
   }
 
