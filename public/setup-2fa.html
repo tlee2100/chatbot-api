@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Setup 2FA</title>
+  </head>
+  <body>
+    <h2>Two-Factor Authentication</h2>
+    <input
+      type="text"
+      id="token"
+      placeholder="Paste your JWT access_token here"
+      style="width: 400px"
+    /><br />
+    <button id="checkStatusBtn">Check Status</button>
+
+    <!-- Phần SETUP — chỉ hiện khi twoFactorEnabled = false -->
+    <div id="setupSection" style="display: none">
+      <h3>Setup Two-Factor Authentication</h3>
+      <button id="startSetup">Start Setup</button>
+
+      <div id="qrSection" style="display: none">
+        <p>Scan this QR code with your authenticator app:</p>
+        <img id="qrImage" src="" width="200" />
+        <p>Or enter secret manually: <code id="secretText"></code></p>
+
+        <h3>Confirm</h3>
+        <input
+          type="text"
+          id="confirmCode"
+          placeholder="6-digit code"
+          maxlength="6"
+        />
+        <button id="confirmBtn">Confirm</button>
+      </div>
+    </div>
+
+    <!--DISABLE — only show when twoFactorEnabled = true -->
+    <div id="disableSection" style="display: none">
+      <h3>Disable 2FA</h3>
+      <input
+        type="text"
+        id="disableCode"
+        placeholder="6-digit code"
+        maxlength="6"
+      />
+      <button id="disableBtn">Disable 2FA</button>
+    </div>
+
+    <pre id="result"></pre>
+
+    <script>
+      const API_BASE = 'http://localhost:3000';
+
+      function getToken() {
+        return document.getElementById('token').value;
+      }
+
+      //Checking
+      async function refreshStatus() {
+        const token = getToken();
+        const res = await fetch(`${API_BASE}/auth/2fa-status`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        document.getElementById('result').textContent = JSON.stringify(
+          data,
+          null,
+          2,
+        );
+
+        if (data.twoFactorEnabled) {
+          document.getElementById('setupSection').style.display = 'none';
+          document.getElementById('disableSection').style.display = 'block';
+        } else {
+          document.getElementById('setupSection').style.display = 'block';
+          document.getElementById('disableSection').style.display = 'none';
+        }
+      }
+
+      document
+        .getElementById('checkStatusBtn')
+        .addEventListener('click', refreshStatus);
+
+      document
+        .getElementById('startSetup')
+        .addEventListener('click', async () => {
+          const token = getToken();
+          const res = await fetch(`${API_BASE}/auth/setup-2fa`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const data = await res.json();
+          document.getElementById('result').textContent = JSON.stringify(
+            data,
+            null,
+            2,
+          );
+
+          if (data.qrCode) {
+            document.getElementById('qrImage').src = data.qrCode;
+            document.getElementById('secretText').textContent = data.secret;
+            document.getElementById('qrSection').style.display = 'block';
+          }
+        });
+
+      document
+        .getElementById('confirmBtn')
+        .addEventListener('click', async () => {
+          const token = getToken();
+          const code = document.getElementById('confirmCode').value;
+          const res = await fetch(`${API_BASE}/auth/confirm-2fa`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ code }),
+          });
+          const data = await res.json();
+          document.getElementById('result').textContent = JSON.stringify(
+            data,
+            null,
+            2,
+          );
+
+          //
+          await refreshStatus();
+        });
+
+      document
+        .getElementById('disableBtn')
+        .addEventListener('click', async () => {
+          const token = getToken();
+          const code = document.getElementById('disableCode').value;
+          const res = await fetch(`${API_BASE}/auth/disable-2fa`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ code }),
+          });
+          const data = await res.json();
+          document.getElementById('result').textContent = JSON.stringify(
+            data,
+            null,
+            2,
+          );
+
+          //
+          await refreshStatus();
+        });
+    </script>
+  </body>
+</html>

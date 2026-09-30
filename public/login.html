@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Login &amp; Chat Test</title>
+    <script src="https://www.google.com/recaptcha/api.js?render=6LeG0UEtAAAAAFf87d2bIS2YLYFqv3lgP1XYDjBw"></script>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <style>
+      body {
+        font-family: sans-serif;
+        max-width: 640px;
+        margin: 40px auto;
+      }
+      #chatSection {
+        display: none;
+        margin-top: 24px;
+        border-top: 1px solid #ccc;
+        padding-top: 16px;
+      }
+      #status {
+        font-weight: bold;
+      }
+      #status.connected {
+        color: green;
+      }
+      #status.disconnected {
+        color: crimson;
+      }
+      #messages {
+        list-style: none;
+        padding: 0;
+        height: 200px;
+        overflow-y: auto;
+        border: 1px solid #ddd;
+        padding: 8px;
+      }
+      #messages li {
+        margin-bottom: 6px;
+      }
+      #messages li .meta {
+        color: #888;
+        font-size: 0.8em;
+      }
+      #notificationList {
+        list-style: none;
+        padding: 0;
+      }
+      #notificationList li {
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        padding: 10px;
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      #notificationList li.processing {
+        border-color: #f0ad4e;
+      }
+      #notificationList li.ready {
+        border-color: #5cb85c;
+      }
+      .notif-status {
+        font-size: 0.85em;
+        color: #888;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Login</h2>
+    <form id="loginForm">
+      <input type="email" id="email" placeholder="Email" required /><br /><br />
+      <input type="password" id="password" placeholder="Password" required /><br /><br />
+      <button type="submit">Log In</button>
+    </form>
+
+    <div id="twoFaSection" style="display: none">
+      <h3>Enter 2FA Code</h3>
+      <input type="text" id="twoFaCode" placeholder="6-digit code" maxlength="6" />
+      <button id="verifyBtn">Verify</button>
+    </div>
+
+    <pre id="result"></pre>
+
+    <div id="chatSection">
+      <h2>Chat Gateway Test</h2>
+      <p>Status: <span id="status" class="disconnected">disconnected</span></p>
+      <ul id="messages"></ul>
+      <form id="messageForm">
+        <input type="text" id="messageInput" placeholder="Type a message..." style="width: 400px" />
+        <button type="submit">Send</button>
+      </form>
+    </div>
+
+    <div id="notificationSection">
+      <h2>Document Notifications</h2>
+      <ul id="notificationList"></ul>
+    </div>
+
+    <script>
+      const SITE_KEY = '6LeG0UEtAAAAAFf87d2bIS2YLYFqv3lgP1XYDjBw';
+      const API_BASE = 'http://localhost:3000';
+      let currentEmail = '';
+      let socket = null;
+
+      function logResult(data) {
+        document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+      }
+
+      function onLoginSuccess(accessToken) {
+        document.getElementById('chatSection').style.display = 'block';
+        connectSocket(accessToken);
+      }
+
+      function connectSocket(accessToken) {
+        if (socket) socket.disconnect();
+
+        socket = io(API_BASE, {
+          auth: { token: accessToken },
+        });
+
+        const statusEl = document.getElementById('status');
+
+        socket.on('connect', () => {
+          statusEl.textContent = 'connected';
+          statusEl.className = 'connected';
+        });
+
+        socket.on('disconnect', () => {
+          statusEl.textContent = 'disconnected';
+          statusEl.className = 'disconnected';
+        });
+
+        socket.on('exception', (err) => {
+          statusEl.textContent = `error: ${err.message}`;
+          statusEl.className = 'disconnected';
+        });
+
+        socket.on('message', (payload) => {
+          const list = document.getElementById('messages');
+          const item = document.createElement('li');
+          item.innerHTML = `<span class="meta">${payload.senderEmail} · ${new Date(
+            payload.timestamp,
+          ).toLocaleTimeString()}</span><br>${payload.message}`;
+          list.appendChild(item);
+          list.scrollTop = list.scrollHeight;
+        });
+
+        socket.on('document-processing', (payload) => {
+          renderNotification(payload);
+        });
+
+        socket.on('document-ready', (payload) => {
+          renderNotification(payload);
+        });
+      }
+
+      function renderNotification(payload) {
+        const list = document.getElementById('notificationList');
+        const existing = document.getElementById(`doc-${payload.documentId}`);
+
+        const statusText = payload.status === 'processing' ? 'processing' : 'ready';
+        const timestamp = payload.processedAt
+          ? new Date(payload.processedAt).toLocaleTimeString()
+          : new Date().toLocaleTimeString();
+
+        const html = `
+    <span>${payload.filename}</span>
+    <span class="notif-status">${statusText} · ${timestamp}</span>
+  `;
+
+        if (existing) {
+          // Document đã có trong danh sách (đang "processing") -> cập nhật lại thành "ready"
+          existing.className = payload.status;
+          existing.innerHTML = html;
+        } else {
+          // Document mới -> thêm dòng mới vào đầu danh sách
+          const item = document.createElement('li');
+          item.id = `doc-${payload.documentId}`;
+          item.className = payload.status;
+          item.innerHTML = html;
+          list.prepend(item);
+        }
+      }
+
+      document.getElementById('loginForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const email = document.getElementById('email').value;
+        const password = document.getElementById('password').value;
+        currentEmail = email;
+
+        grecaptcha.ready(() => {
+          grecaptcha.execute(SITE_KEY, { action: 'login' }).then(async (token) => {
+            const res = await fetch(`${API_BASE}/auth/login`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ email, password, recaptchaToken: token }),
+            });
+            const data = await res.json();
+            logResult(data);
+
+            if (data.twoFactorRequired) {
+              document.getElementById('twoFaSection').style.display = 'block';
+            } else if (data.access_token) {
+              onLoginSuccess(data.access_token);
+            }
+          });
+        });
+      });
+
+      document.getElementById('verifyBtn').addEventListener('click', async () => {
+        const code = document.getElementById('twoFaCode').value;
+        const res = await fetch(`${API_BASE}/auth/verify-2fa-login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: currentEmail, code }),
+        });
+        const data = await res.json();
+        logResult(data);
+
+        if (data.access_token) {
+          onLoginSuccess(data.access_token);
+        }
+      });
+
+      document.getElementById('messageForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const input = document.getElementById('messageInput');
+        if (!socket || !input.value.trim()) return;
+        socket.emit('message', { message: input.value.trim() });
+        input.value = '';
+      });
+    </script>
+  </body>
+</html>
